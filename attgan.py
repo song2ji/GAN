@@ -7,7 +7,7 @@
 
 import torch
 import torch.nn as nn
-from nn import LinearBlock, Conv2dBlock, ConvTranspose2dBlock
+from nn import LinearBlock, Conv2dBlock, ConvTranspose2dBlock, MiddleBlock, DownBlock
 from torchsummary import summary
 import numpy as np
 import torchsnooper
@@ -17,7 +17,7 @@ from loss import StyleLoss, PerceptualLoss
 # In the original AttGAN, slim.conv2d uses padding 'same'
 MAX_DIM = 64 * 16  # 1024
 
-class VGG16FeatureExtractor(nn.Module):
+class VGG16FeatureExtractor(nn.Module):#vgg特征提取网络
     def __init__(self):
         super().__init__()
         vgg16 = models.vgg16(pretrained=True)
@@ -28,7 +28,7 @@ class VGG16FeatureExtractor(nn.Module):
         # fix the encoder
         for i in range(3):
             for param in getattr(self, 'enc_{:d}'.format(i + 1)).parameters():
-                param.requires_grad = False
+                param.requires_grad = False#固定编码器
 
     def forward(self, image):
         results = [image]
@@ -38,26 +38,26 @@ class VGG16FeatureExtractor(nn.Module):
         return results[1:]
 
 
-class Generator(nn.Module):
+class Generator(nn.Module):#生成器
     def __init__(self, enc_dim=64, enc_layers=5, enc_norm_fn='batchnorm', enc_acti_fn='lrelu',
                  dec_dim=64, dec_layers=5, dec_norm_fn='batchnorm', dec_acti_fn='relu',
                  n_attrs=4, shortcut_layers=1, inject_layers=0, img_size=128):
         super(Generator, self).__init__()
-        self.shortcut_layers = min(shortcut_layers, dec_layers - 1)
-        self.inject_layers = min(inject_layers, dec_layers - 1)
+        self.shortcut_layers = min(shortcut_layers, dec_layers - 1)#?
+        self.inject_layers = min(inject_layers, dec_layers - 1)#?
         self.f_size = img_size // 2**enc_layers  # f_size = 4 for 128x128
         
         layers = []
         n_in = 3
-        for i in range(enc_layers):
+        for i in range(enc_layers):#设置编码层
             n_out = min(enc_dim * 2**i, MAX_DIM)
             layers += [Conv2dBlock(
                 n_in, n_out, (4, 4), stride=2, padding=1, norm_fn=enc_norm_fn, acti_fn=enc_acti_fn
             )]
             n_in = n_out
         self.enc_layers = nn.ModuleList(layers)
-        self.up_att = nn.Upsample(scale_factor=16, mode='bicubic', align_corners=True)
-        self.re_att = nn.ReLU() #F.interpolate(z,size=[128,128], mode='nearest')
+        self.up_att = nn.Upsample(scale_factor=16, mode='bicubic', align_corners=True)#上采样
+        self.re_att = nn.ReLU() #F.interpolate(z,size=[128,128], mode='nearest')#relu层
 
         layers = []
         n_in = n_in #n_attrs  # 1024 + 13
@@ -75,40 +75,63 @@ class Generator(nn.Module):
                     n_in, 3, (4, 4), stride=2, padding=1, norm_fn='none', acti_fn='tanh'
                 )]
         self.dec_layers = nn.ModuleList(layers)
+        self.F = Extractors()
+        self.T = Translator()
 
     @torchsnooper.snoop()
     def encode(self, x):
+        # x.size=[32,3,64,64]
         z = x
         zs = []
         for layer in self.enc_layers:
             z = layer(z)
             zs.append(z)
-        h1, h2 = torch.split(z, 256, dim=1)
+        h1, h2 = torch.split(z, 256, dim=1)#分块按照256维度
+        # h2.size=[32,256,4,4]
         box = []
-        for i in range(4):
+
+        # 4-attr
+        """
+        for i in range(4):#4个属性？
             num_chs = h2.size(1)
             per_chs = float(num_chs) / 4
             start = int(np.rint(per_chs * i))
             end = int(np.rint(per_chs * (i + 1)))
-            temp = h2.narrow(1, start, end-start)
-            att_mean = temp.reshape(-1, 64, 8, 8).mean(1)
+            temp = h2.narrow(1, start, end-start)#提取维度1的数据
+            # temp.size=[32,64,4,4]
+
+            att_mean = temp.reshape(-1, 64, 8, 8).mean(1)#64*8*8
+            # att_mean.size=[8,8,8]
             segmap = att_mean.view(-1, 1, 8, 8).repeat(1, 3, 1, 1)
+            # segmap.size=[8,3,8,8]
             segmap = self.re_att(segmap)
-            #segmap = torch.sign(segmap)
+            # segmap = torch.sign(segmap)
             segmap = F.interpolate(segmap,size=[128,128], mode='nearest')
+            # F.interpolate利用插值方法，对输入的张量数组进行上\下采样操作, size为输出空间大小
             box.append(segmap)
         re = torch.cat(box, dim=1)
-        return re, z
+        """
+
+
+        # 1-attr
+        re=1
+        return re, z#编码到
     #@torchsnooper.snoop()
     def decode(self, z):
         #a_tile = a.view(a.size(0), -1, 1, 1).repeat(1, 1, self.f_size, self.f_size)
-        #z = zs[-1]#torch.cat([zs[-1], a_tile], dim=1)			   
+        #z = zs[-1]#torch.cat([zs[-1], a_tile], dim=1)
             
         for i, layer in enumerate(self.dec_layers):
             z = layer(z)
             #if self.shortcut_layers > i:  # Concat 1024 with 512
                 #z = torch.cat([z, zs[len(self.dec_layers) - 2 - i]], dim=1)
         return z
+
+    def extract(self, x):
+        return self.F(x)
+
+    def translate(self, gen2, s):
+        return self.T(gen2, s)
     
     def forward(self, x, a=None, mode='enc'):
         if mode == 'enc':
@@ -124,7 +147,7 @@ class Discriminators(nn.Module):
     def __init__(self, dim=64, norm_fn='instancenorm', acti_fn='lrelu',
                  fc_dim=1024, fc_norm_fn='none', fc_acti_fn='lrelu', n_layers=5, img_size=128):
         super(Discriminators, self).__init__()
-        self.f_size = img_size // 2**n_layers
+        self.f_size = img_size // 2**n_layers #4
         
         layers = []
         n_in = 3
@@ -137,19 +160,101 @@ class Discriminators(nn.Module):
         self.conv = nn.Sequential(*layers)
         self.fc_adv = nn.Sequential(
             LinearBlock(1024 * self.f_size * self.f_size, fc_dim, fc_norm_fn, fc_acti_fn),
-            LinearBlock(fc_dim, 1, 'none', 'none')
+            LinearBlock(fc_dim, 1, 'none', 'none') #对抗
         )
         self.fc_cls = nn.Sequential(
             LinearBlock(1024 * self.f_size * self.f_size, fc_dim, fc_norm_fn, fc_acti_fn),
-            LinearBlock(fc_dim, 4, 'none', 'none')
+            # 4-attr
+            # LinearBlock(fc_dim, 4, 'none', 'none')#判别
+            # 1-attr
+            LinearBlock(fc_dim, 1, 'none', 'none')  # 判别
         )
     
+    def forward(self, img,img_m ):
+        img_z = self.conv(img)
+        img_z = img_z.view(img_z.size(0), -1)
+        img_z_m = self.conv(img_m)
+        img_z_m = img_z_m.view(img_z_m.size(0), -1)
+        return self.fc_adv(img_z), self.fc_cls(img_z_m)
+
+
+class Extractors(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.channels = [64, 128, 256, 512, 1024, 2048]
+        self.style_dim=256
+        # extractors:
+        # # No normalization (Tag-specific)
+        # channels: [64, 128, 256, 512, 1024, 2048]
+        self.model = nn.Sequential(
+            nn.Conv2d(3, self.channels[0], 1, 1, 0),
+            *[DownBlock(self.channels[i], self.channels[i + 1]) for i in range(len(self.channels) - 1)],
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(self.channels[-1], self.style_dim, 1, 1, 0),  # 通道数为风格*标签种类
+        )
     def forward(self, x):
-        h = self.conv(x)
-        h = h.view(h.size(0), -1)
-        return self.fc_adv(h), self.fc_cls(h)
+        # print('x:')
+        # print(x.shape)
+        s = self.model(x).view(x.size(0), 1, -1)
+        return s[:,0]
 
 
+class Translator(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.channels = [64, 64, 64, 64, 64, 64, 64, 256]
+        # translators:
+        # # Adaptive Instance Normalization (Tag-specific)
+        # channels: [64, 64, 64, 64, 64, 64, 64, 64]
+        self.gen2channel=256
+        self.style_dim = 256
+        self.model = nn.Sequential(
+            nn.Conv2d(self.gen2channel, self.channels[0], 1, 1, 0),
+            *[MiddleBlock(self.channels[i], self.channels[i + 1]) for i in range(len(self.channels) - 1)]
+        )
+        # 从编码器最后一个通道维数开始卷积
+
+        self.style_to_params = nn.Linear(self.style_dim, self.get_num_adain_params(self.model))
+        # 风格维数————需要自适应归一化的维数，从self.model块所需要的获取
+
+        # self.features = nn.Sequential(
+        #     nn.Conv2d(channels[-1], hyperparameters['decoder']['channels'][0], 1, 1, 0),
+        # )
+        #
+        # self.masks = nn.Sequential(
+        #     nn.Conv2d(channels[-1], hyperparameters['decoder']['channels'][0], 1, 1, 0),
+        #     nn.Sigmoid()
+        # )
+
+    def forward(self, gen2,s):
+        # print('s:')
+        # print(s.shape)
+       #  print(gen2.shape)
+       # print(s.shape)
+        p = self.style_to_params(s)  # 将风格维数转化为自适应输入的参数？
+
+        self.assign_adain_params(p, self.model)
+
+        gen2_add_style = self.model(gen2)
+
+        return gen2_add_style
+
+    def assign_adain_params(self, adain_params, model):
+        # assign the adain_params to the AdaIN layers in model
+        for m in model.modules():
+            if m.__class__.__name__ in ["AdaptiveInstanceNorm2d"]:
+                m.bias = adain_params[:, :m.num_features].contiguous().view(-1, m.num_features, 1)
+                m.weight = adain_params[:, m.num_features:2 * m.num_features].contiguous().view(-1, m.num_features, 1) + 1
+                if adain_params.size(1) > 2 * m.num_features:
+                    adain_params = adain_params[:, 2 * m.num_features:]
+
+    def get_num_adain_params(self, model):
+        # return the number of AdaIN parameters needed by the model
+        num_adain_params = 0
+        for m in model.modules():
+            if m.__class__.__name__ in ["AdaptiveInstanceNorm2d"]:
+                num_adain_params += 2 * m.num_features
+        return num_adain_params
 
 import torch.autograd as autograd
 import torch.nn.functional as F
@@ -175,7 +280,7 @@ class AttGAN():
         )
         self.G.train()
         if self.gpu: self.G.cuda()
-        summary(self.G, [(3, args.img_size, args.img_size), (args.n_attrs, 1, 1)], batch_size=4, device='cuda' if args.gpu else 'cpu')
+        #  summary(self.G, [(3, args.img_size, args.img_size), (args.n_attrs, 1, 1)], batch_size=4, device='cuda' if args.gpu else 'cpu')
         
         self.D = Discriminators(
             args.dis_dim, args.dis_norm, args.dis_acti,
@@ -183,7 +288,7 @@ class AttGAN():
         )
         self.D.train()
         if self.gpu: self.D.cuda()
-        summary(self.D, [(3, args.img_size, args.img_size)], batch_size=4, device='cuda' if args.gpu else 'cpu')
+    #    summary(self.D, [(3, args.img_size, args.img_size)], batch_size=4, device='cuda' if args.gpu else 'cpu')
         
         if self.multi_gpu:
             self.G = nn.DataParallel(self.G)
@@ -198,21 +303,44 @@ class AttGAN():
         for g in self.optim_D.param_groups:
             g['lr'] = lr
 
-    def classify(self, zs, a):
+    def classify(self, zs, a):#打标签
         h1, h2 = torch.split(zs, 256, dim=1)
         box = []
+
+        # 4-attri
+        """
         for i in range(a.size(1)):
+            # a.size=[32,4]
+            # h2.size=[32,256,4,4]
             num_chs = h2.size(1)
             per_chs = float(num_chs) / 4
             start = int(np.rint(per_chs * i))
             end = int(np.rint(per_chs * (i + 1)))
-            temp = h2.narrow(1, start, end-start) #[32,64,4,4]
-            av = a.view(a.size(0), -1, 1, 1)
+            temp = h2.narrow(1, start, end-start) #temp=[32,64,4,4]
+            # x.narrow(0, 1, 3):沿第0轴方向的第1个元素开始切片（第0轴维度大小为5）取3个元素
+            av = a.view(a.size(0), -1, 1, 1) #a.size=[32,4]
+            # av.size=[32,4,1,1]
             ai =av[:,i,:,:]
+            # ai.size=[32,1,1,1]
             ai = torch.unsqueeze(ai, 1)
-            tar_i =ai.repeat(1, 64,  h2.size(2), h2.size(2))
-            box.append(torch.mul(tar_i, temp))
+            # ai.size=[32,1,1,1,1]
+            tar_i =ai.repeat(1, 64,  h2.size(2), h2.size(2)) #h2.size(2)=4
+            # tar_i.shape=[32,64,4,4]
+            box.append(torch.mul(tar_i, temp))#打标签
+            # torch.mul(a, b)是矩阵a和b对应位相乘，a和b的维度必须相等
         re = torch.cat(box, dim=1)
+        # cat是将两个张量（tensor）拼接在一起，cat是concatenate的意思, dim=0按行拼接，dim=1按列拼接
+        """
+
+        # 1-attri
+        ai = a.view(len(a), 1, 1, 1)
+        # ai.size = [32, 1, 1, 1]
+        # h2.size = [32, 256, 4, 4]
+        tar_i = ai.repeat(1, 256, 4, 4)
+        # tar_i.size = [32, 256, 4, 4]
+        re = torch.mul(tar_i, h2)
+
+
         z = torch.cat([h1, re], dim=1)		
         return z,re
 
@@ -233,33 +361,51 @@ class AttGAN():
         z = torch.cat(box, dim=1)		
         return z
 
-    def trainG(self, img_a, img_b, att_a, att_a_, att_b, att_b_):
-        for p in self.D.parameters():
+    def trainG(self, img_a_m, img_b_m, img_a, img_b,att_a, att_a_, att_b, att_b_, mask):
+        for p in self.D.parameters():#关闭判别器
             p.requires_grad = False
         
-        _, zs_a = self.G(img_a, mode='enc')
-        _, zs_b = self.G(img_b, mode='enc')
+        _, zs_a = self.G(img_a_m, mode='enc')#编码
+        _, zs_b = self.G(img_b_m, mode='enc')#编码
         h1_a, h2_a = torch.split(zs_a, 256, dim=1)
         h1_b, h2_b = torch.split(zs_b, 256, dim=1)
-        z_b, gen2_b = self.classify(zs_b, att_b)
+        z_b, gen2_b = self.classify(zs_b, att_b)#z新生成的码，gen2_为标签处理后的块
         z_a, gen2_a = self.classify(zs_a, att_a)
 
-        img_recon_b  = self.G(z_b, mode='dec')
-        img_recon_a = self.G(z_a, mode='dec')
+        s_a = self.G.extract(img_a)
+        s_b = self.G.extract(img_b)
+
+        gen2_b_style=self.G.translate(gen2_b,s_a)
+        gen2_a_style=self.G.translate(gen2_a,s_b)
+
+
+        img_recon_b_m  = self.G(z_b, mode='dec')*mask
+        img_recon_a_m = self.G(z_a, mode='dec')*mask
+
         
-        h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
-        h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
-        img_fake_a = self.G(h_a1b2, mode='dec')
-        img_fake_b = self.G(h_b1a2, mode='dec')
-        
-        d_a_fake, dc_a_fake = self.D(img_fake_a)
-        d_b_fake, dc_b_fake = self.D(img_fake_b)
-        
+        h_a1b2 = torch.cat([h1_a, gen2_b_style], dim=1)
+        h_b1a2 = torch.cat([h1_b, gen2_a_style], dim=1)
+
+        img_fake_a_m = self.G(h_a1b2, mode='dec')*mask
+        img_fake_b_m = self.G(h_b1a2, mode='dec')*mask
+
+        img_fake_a = img_fake_a_m + img_a-  mask * img_a
+        img_fake_b = img_fake_b_m + img_b - mask * img_b
+
+        d_a_fake, dc_a_fake = self.D(img_fake_a,img_fake_a_m)
+        d_b_fake, dc_b_fake = self.D(img_fake_b,img_fake_b_m) # 4,1
+
+        s_a_fake = self.G.extract(img_fake_a)
+        s_b_fake = self.G.extract(img_fake_b)
+        dc_a_fake=torch.squeeze(dc_a_fake,1)
+        dc_b_fake = torch.squeeze(dc_b_fake, 1)
         if self.mode == 'wgan':
             gf_loss = -d_a_fake.mean()-d_b_fake.mean()
 
         gc_loss = F.binary_cross_entropy_with_logits(dc_a_fake, att_b) + F.binary_cross_entropy_with_logits(dc_b_fake, att_a)
-        gr_loss = F.l1_loss(img_recon_a, img_a) #+ F.l1_loss(img_recon_b, img_b)
+        gr_loss = F.l1_loss(img_recon_a_m+img_a-mask*img_a, img_a)+  F.l1_loss(img_recon_b_m+img_b-mask*img_b, img_b)#+ F.l1_loss(img_recon_b, img_b)
+        gs_loss = F.l1_loss(s_a_fake, s_a)+F.l1_loss(s_b_fake, s_b)
+
         '''
         if True:
             vgg_style = StyleLoss().cuda()
@@ -277,7 +423,7 @@ class AttGAN():
         for i in range(3):
             loss_app_per += F.l1_loss(feat_output[i], feat_gt[i])
         '''
-        g_loss = gf_loss + 100 * gr_loss + self.lambda_2 * gc_loss #+ vgg_loss
+        g_loss = gf_loss + 100 * gr_loss + self.lambda_2 * gc_loss+ 100 * gs_loss #+ vgg_loss
         
         self.optim_G.zero_grad()
         g_loss.backward()
@@ -291,27 +437,39 @@ class AttGAN():
         return errG
 
 
-    def trainD(self, img_a, img_b, att_a, att_a_, att_b, att_b_):
+    def trainD(self, img_a_m, img_b_m, img_a, img_b,att_a, att_a_, att_b, att_b_, mask):
         for p in self.D.parameters():
             p.requires_grad = True
-        _, zs_a = self.G(img_a, mode='enc')
-        _, zs_b = self.G(img_b, mode='enc')
-        h1_a, h2_a = torch.split(zs_a, 256, dim=1)
-        h1_b, h2_b = torch.split(zs_b, 256, dim=1)
+        _, zs_a = self.G(img_a_m, mode='enc')  # 编码
+        _, zs_b = self.G(img_b_m, mode='enc')  # 编码
+
+        h1_a, h2_a = torch.split(zs_a, 256, dim=1)#属性分割
+        h1_b, h2_b = torch.split(zs_b, 256, dim=1)#属性风格
+
         z_b, gen2_b = self.classify(zs_b, att_b)
         z_a, gen2_a = self.classify(zs_a, att_a)
-        
-        h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
-        h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
-        img_fake_a = self.G(h_a1b2, mode='dec')
-        img_fake_b = self.G(h_b1a2, mode='dec')
 
-        d_real_a, dc_real_a = self.D(img_a)
-        d_real_b, dc_real_b = self.D(img_b)
-        d_fake_a, _ = self.D(img_fake_a.detach())
-        d_fake_b, _ = self.D(img_fake_b.detach())
+        s_a = self.G.extract(img_a)
+        s_b = self.G.extract(img_b)
+
+        gen2_b_style = self.G.translate(gen2_b, s_a)
+        gen2_a_style = self.G.translate(gen2_a, s_b)
+
+        h_a1b2 = torch.cat([h1_a, gen2_b_style], dim=1)
+        h_b1a2 = torch.cat([h1_b, gen2_a_style], dim=1)
+
+        img_fake_a_m = self.G(h_a1b2, mode='dec')*mask
+        img_fake_b_m= self.G(h_b1a2, mode='dec')*mask
+        img_fake_a = img_fake_a_m + img_a - mask * img_a
+        img_fake_b = img_fake_b_m + img_b - mask * img_b
+
+        d_real_a, dc_real_a = self.D(img_a,img_a_m*mask)
+        d_real_b, dc_real_b = self.D(img_b,img_b_m*mask)
+
+        d_fake_a, _ = self.D(img_fake_a.detach(),img_fake_a_m*mask)
+        d_fake_b, _ = self.D(img_fake_b.detach(),img_fake_b_m*mask)
         
-        def gradient_penalty(f, real, fake=None):
+        def gradient_penalty(f, real, fake, real_m, fake_m):
             def interpolate(a, b=None):
                 if b is None:  # interpolation in DRAGAN
                     beta = torch.rand_like(a)
@@ -321,7 +479,8 @@ class AttGAN():
                 inter = a + alpha * (b - a)
                 return inter
             x = interpolate(real, fake).requires_grad_(True)
-            pred = f(x)
+            y = interpolate(real_m, fake_m).requires_grad_(True)
+            pred = f(x, y)
             if isinstance(pred, tuple):
                 pred = pred[0]
             grad = autograd.grad(
@@ -335,10 +494,14 @@ class AttGAN():
             return gp
         
         if self.mode == 'wgan':
-            wd = d_real_a.mean() + d_real_b.mean() - d_fake_a.mean() - d_fake_b.mean()
+            wd = d_real_a.mean() + d_real_b.mean() - d_fake_a.mean() - d_fake_b.mean()#对抗
             df_loss = -wd
-            df_gp = gradient_penalty(self.D, img_a, img_fake_a) + gradient_penalty(self.D, img_b, img_fake_b)
+            df_gp = gradient_penalty(self.D, img_a, img_fake_a, img_a_m, img_fake_a_m) + gradient_penalty(self.D, img_b, img_fake_b, img_fake_b, img_fake_b_m)
 
+        dc_real_a = torch.squeeze(dc_real_a, 1)
+        dc_real_b = torch.squeeze(dc_real_b, 1)
+        # print(dc_real_a.shape)
+        # print(att_a.shape)
         dc_loss = F.binary_cross_entropy_with_logits(dc_real_a, att_a) + F.binary_cross_entropy_with_logits(dc_real_b, att_b)
         d_loss = df_loss + self.lambda_gp * df_gp + self.lambda_3 * dc_loss
         

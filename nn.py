@@ -7,6 +7,12 @@
 
 import torch.nn as nn
 from switchable_norm import SwitchNorm1d, SwitchNorm2d
+import torch
+import torch.nn.functional as F
+
+
+import math
+
 
 
 def add_normalization_1d(layers, fn, n_out):
@@ -103,3 +109,93 @@ class ConvTranspose2dBlock(nn.Module):
     
     def forward(self, x):
         return self.layers(x)
+
+
+class DownBlock(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(in_dim, in_dim, 3, 1, 1)
+        self.conv2 = nn.Conv2d(in_dim, out_dim, 3, 1, 1)
+
+        self.activ = nn.LeakyReLU(0.2, inplace=True)
+
+        self.sc = nn.Conv2d(in_dim, out_dim, 1, 1, 0, bias=False)
+
+    def forward(self, x):
+        residual = F.avg_pool2d(self.sc(x), 2)
+        out = self.conv2(self.activ(F.avg_pool2d(self.conv1(self.activ(x.clone())), 2)))
+        out = residual + out
+        return out / math.sqrt(2)
+
+class MiddleBlock(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+
+        self.conv1 = nn.Conv2d(in_dim, out_dim, 3, 1, 1)
+        self.conv2 = nn.Conv2d(out_dim, out_dim, 3, 1, 1)
+
+        self.adain1 = AdaptiveInstanceNorm2d(in_dim)
+        self.adain2 = AdaptiveInstanceNorm2d(out_dim)
+
+        self.activ = nn.LeakyReLU(0.2, inplace=True)
+
+        self.sc = nn.Conv2d(in_dim, out_dim, 1, 1, 0, bias=False)
+
+    def forward(self, x):
+        residual = self.sc(x)
+        out = self.conv2(self.activ(self.adain2(self.conv1(self.activ(self.adain1(x.clone()))))))
+        out = residual + out
+        import math
+        return out / math.sqrt(2)
+
+class AdaptiveInstanceNorm2d(nn.Module):#自适应实例归一化
+    def __init__(self, num_features, eps=1e-5):
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+
+        # weight and bias are dynamically assigned
+        self.bias = None
+        self.weight = None
+
+    def forward(self, x):
+        assert self.bias is not None, "Please assign weight and bias before calling AdaIN!"
+        N, C, H, W = x.size()
+        x = x.view(N, C, -1)
+        bias_in = x.mean(-1, keepdim=True)
+        weight_in = x.std(-1, keepdim=True)
+
+        out = (x - bias_in) / (weight_in + self.eps) * self.weight + self.bias
+        return out.view(N, C, H, W)
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(' + str(self.num_features) + ')'
+
+class InstanceNorm2d(nn.Module):
+    def __init__(self, num_features, eps=1e-5):#num_features (int) - 指明输入 Tensor 的通道数量。
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+
+        # weight and bias are dynamically assigned
+        self.weight = nn.Parameter(torch.ones(1, num_features, 1))
+        self.bias = nn.Parameter(torch.zeros(1, num_features, 1))
+
+    def forward(self, x):
+        N, C, H, W = x.size()
+        x = x.view(N, C, -1)
+        bias_in = x.mean(-1, keepdim=True)
+        weight_in = x.std(-1, keepdim=True)
+
+        out = (x - bias_in) / (weight_in + self.eps) * self.weight + self.bias
+        return out.view(N, C, H, W)
+
+    def __repr__(self):
+        return self.__class__.__name__ + '(' + str(self.num_features) + ')'
+
+def tile_like(x, target):
+    # make x is able to concat with target at dim 1.
+    x = x.view(x.size(0), -1, 1, 1)
+    x = x.repeat(1, 1, target.size(2), target.size(3))
+    return x
