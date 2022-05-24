@@ -39,14 +39,15 @@ class VGG16FeatureExtractor(nn.Module):#vgg特征提取网络
 
 
 class Generator(nn.Module):#生成器
-    def __init__(self, enc_dim=64, enc_layers=5, enc_norm_fn='batchnorm', enc_acti_fn='lrelu',
-                 dec_dim=64, dec_layers=5, dec_norm_fn='batchnorm', dec_acti_fn='relu',
+    def __init__(self, enc_dim=64, enc_layers=3, enc_norm_fn='batchnorm', enc_acti_fn='lrelu',
+                 dec_dim=64, dec_layers=3, dec_norm_fn='batchnorm', dec_acti_fn='relu',
                  n_attrs=4, shortcut_layers=1, inject_layers=0, img_size=128):
         super(Generator, self).__init__()
         self.shortcut_layers = min(shortcut_layers, dec_layers - 1)#?
         self.inject_layers = min(inject_layers, dec_layers - 1)#?
-        self.f_size = img_size // 2**enc_layers  # f_size = 4 for 128x128
-        
+   #     self.f_size = img_size // 2**(enc_layers+1)  # f_size = 4 for 128x128
+        self.f_size = 4
+        print(self.f_size)
         layers = []
         n_in = 3
         for i in range(enc_layers):#设置编码层
@@ -63,7 +64,7 @@ class Generator(nn.Module):#生成器
         n_in = n_in #n_attrs  # 1024 + 13
         for i in range(dec_layers):
             if i < dec_layers - 1:
-                n_out = min(dec_dim * 2**(dec_layers-i-1), MAX_DIM)
+                n_out = min(dec_dim * 2**(dec_layers-i-2), MAX_DIM)
                 layers += [ConvTranspose2dBlock(
                     n_in, n_out, (4, 4), stride=2, padding=1, norm_fn=dec_norm_fn, acti_fn=dec_acti_fn
                 )]
@@ -82,16 +83,19 @@ class Generator(nn.Module):#生成器
     def encode(self, x):
         # x.size=[32,3,64,64]
         z = x
+        # print('img size ')
+        # print(x.shape)
         zs = []
         for layer in self.enc_layers:
             z = layer(z)
+            # print('encode size of each layer')
+            # print(z.shape)
             zs.append(z)
-        h1, h2 = torch.split(z, 256, dim=1)#分块按照256维度
         # h2.size=[32,256,4,4]
-        box = []
 
         # 4-attr
         """
+        box = []
         for i in range(4):#4个属性？
             num_chs = h2.size(1)
             per_chs = float(num_chs) / 4
@@ -142,13 +146,16 @@ class Generator(nn.Module):#生成器
             return z
         raise Exception('Unrecognized mode: ' + mode)
 
-class Discriminators(nn.Module):
+
+
+
+class Discriminators1(nn.Module):
     # No instancenorm in fcs in source code, which is different from paper.
     def __init__(self, dim=64, norm_fn='instancenorm', acti_fn='lrelu',
-                 fc_dim=1024, fc_norm_fn='none', fc_acti_fn='lrelu', n_layers=5, img_size=128):
-        super(Discriminators, self).__init__()
-        self.f_size = img_size // 2**n_layers #4
-        
+                 fc_dim=1024, fc_norm_fn='none', fc_acti_fn='lrelu', n_layers=3, img_size=128):
+        super(Discriminators1, self).__init__()
+    #    self.f_size = img_size // 2**n_layers #4
+        self.f_size = 4
         layers = []
         n_in = 3
         for i in range(n_layers):
@@ -158,6 +165,7 @@ class Discriminators(nn.Module):
             )]
             n_in = n_out
         self.conv = nn.Sequential(*layers)
+        print(self.conv)
         self.fc_adv = nn.Sequential(
             LinearBlock(1024 * self.f_size * self.f_size, fc_dim, fc_norm_fn, fc_acti_fn),
             LinearBlock(fc_dim, 1, 'none', 'none') #对抗
@@ -170,12 +178,45 @@ class Discriminators(nn.Module):
             LinearBlock(fc_dim, 1, 'none', 'none')  # 判别
         )
     
-    def forward(self, img,img_m ):
-        img_z = self.conv(img)
-        img_z = img_z.view(img_z.size(0), -1)
+    def forward(self,img_m):
         img_z_m = self.conv(img_m)
+        # size[32,1024,4,4]
         img_z_m = img_z_m.view(img_z_m.size(0), -1)
-        return self.fc_adv(img_z), self.fc_cls(img_z_m)
+        # size[32,16384]s
+        return self.fc_adv(img_z_m), self.fc_cls(img_z_m)
+
+class Discriminators2(nn.Module):
+    # No instancenorm in fcs in source code, which is different from paper.
+    def __init__(self, dim=64, norm_fn='instancenorm', acti_fn='lrelu',
+                 fc_dim=1024, fc_norm_fn='none', fc_acti_fn='lrelu', n_layers=3, img_size=128):
+        super(Discriminators2, self).__init__()
+        #self.f_size = img_size // 2 ** n_layers  # 4
+        self.f_size=4
+        layers = []
+        n_in = 3
+        for i in range(n_layers):
+            n_out = min(dim * 2 ** i, MAX_DIM)
+            layers += [Conv2dBlock(
+                n_in, n_out, (4, 4), stride=2, padding=1, norm_fn=norm_fn, acti_fn=acti_fn
+            )]
+            n_in = n_out
+        self.conv = nn.Sequential(*layers)
+        self.fc_adv = nn.Sequential(
+            LinearBlock(1024 * self.f_size * self.f_size, fc_dim, fc_norm_fn, fc_acti_fn),
+            LinearBlock(fc_dim, 1, 'none', 'none')  # 对抗
+        )
+        self.fc_cls = nn.Sequential(
+            LinearBlock(1024 * self.f_size * self.f_size, fc_dim, fc_norm_fn, fc_acti_fn),
+            # 4-attr
+            # LinearBlock(fc_dim, 4, 'none', 'none')#判别
+            # 1-attr
+            LinearBlock(fc_dim, 1, 'none', 'none')  # 判别
+        )
+
+    def forward(self,img):
+        img = self.conv(img)
+        img = img.view(img.size(0), -1)
+        return self.fc_adv(img)
 
 
 class Extractors(nn.Module):
@@ -193,8 +234,6 @@ class Extractors(nn.Module):
             nn.Conv2d(self.channels[-1], self.style_dim, 1, 1, 0),  # 通道数为风格*标签种类
         )
     def forward(self, x):
-        # print('x:')
-        # print(x.shape)
         s = self.model(x).view(x.size(0), 1, -1)
         return s[:,0]
 
@@ -202,12 +241,12 @@ class Extractors(nn.Module):
 class Translator(nn.Module):
     def __init__(self):
         super().__init__()
-        self.channels = [64, 64, 64, 64, 64, 64, 64, 256]
+        self.channels = [128, 128, 128, 128, 128, 128, 128, 128]
         # translators:
         # # Adaptive Instance Normalization (Tag-specific)
         # channels: [64, 64, 64, 64, 64, 64, 64, 64]
-        self.gen2channel=256
-        self.style_dim = 256
+        self.gen2channel=128
+        self.style_dim =256
         self.model = nn.Sequential(
             nn.Conv2d(self.gen2channel, self.channels[0], 1, 1, 0),
             *[MiddleBlock(self.channels[i], self.channels[i + 1]) for i in range(len(self.channels) - 1)]
@@ -215,6 +254,7 @@ class Translator(nn.Module):
         # 从编码器最后一个通道维数开始卷积
 
         self.style_to_params = nn.Linear(self.style_dim, self.get_num_adain_params(self.model))
+        print(self.style_to_params)
         # 风格维数————需要自适应归一化的维数，从self.model块所需要的获取
 
         # self.features = nn.Sequential(
@@ -282,30 +322,39 @@ class AttGAN():
         if self.gpu: self.G.cuda()
         #  summary(self.G, [(3, args.img_size, args.img_size), (args.n_attrs, 1, 1)], batch_size=4, device='cuda' if args.gpu else 'cpu')
         
-        self.D = Discriminators(
+        self.D1 = Discriminators1(
             args.dis_dim, args.dis_norm, args.dis_acti,
             args.dis_fc_dim, args.dis_fc_norm, args.dis_fc_acti, args.dis_layers, args.img_size
         )
-        self.D.train()
-        if self.gpu: self.D.cuda()
+        self.D2 = Discriminators2(
+            args.dis_dim, args.dis_norm, args.dis_acti,
+            args.dis_fc_dim, args.dis_fc_norm, args.dis_fc_acti, args.dis_layers, args.img_size
+        )
+        self.D1.train()
+        self.D2.train()
+        if self.gpu: self.D1.cuda()
+        if self.gpu: self.D2.cuda()
     #    summary(self.D, [(3, args.img_size, args.img_size)], batch_size=4, device='cuda' if args.gpu else 'cpu')
         
-        if self.multi_gpu:
-            self.G = nn.DataParallel(self.G)
-            self.D = nn.DataParallel(self.D)
+        # if self.multi_gpu:
+        #     self.G = nn.DataParallel(self.G)
+        #     self.D = nn.DataParallel(self.D)
         
         self.optim_G = optim.Adam(self.G.parameters(), lr=args.lr, betas=args.betas)
-        self.optim_D = optim.Adam(self.D.parameters(), lr=args.lr, betas=args.betas)
+        self.optim_D1 = optim.Adam(self.D1.parameters(), lr=args.lr, betas=args.betas)
+        self.optim_D2 = optim.Adam(self.D2.parameters(), lr=args.lr, betas=args.betas)
     
     def set_lr(self, lr):
         for g in self.optim_G.param_groups:
             g['lr'] = lr
-        for g in self.optim_D.param_groups:
+        for g in self.optim_D1.param_groups:
+            g['lr'] = lr
+        for g in self.optim_D2.param_groups:
             g['lr'] = lr
 
     def classify(self, zs, a):#打标签
-        h1, h2 = torch.split(zs, 256, dim=1)
-        box = []
+        h1, h2 = torch.split(zs, 128, dim=1)
+        # box = []
 
         # 4-attri
         """
@@ -336,12 +385,11 @@ class AttGAN():
         ai = a.view(len(a), 1, 1, 1)
         # ai.size = [32, 1, 1, 1]
         # h2.size = [32, 256, 4, 4]
-        tar_i = ai.repeat(1, 256, 4, 4)
+        tar_i = ai.repeat(1, 128, 16, 16)
         # tar_i.size = [32, 256, 4, 4]
+
         re = torch.mul(tar_i, h2)
-
-
-        z = torch.cat([h1, re], dim=1)		
+        z = torch.cat([h1, re], dim=1)
         return z,re
 
     def diffatt(self, re_a, re_b, att_a, att_b, index):
@@ -362,49 +410,68 @@ class AttGAN():
         return z
 
     def trainG(self, img_a_m, img_b_m, img_a, img_b,att_a, att_a_, att_b, att_b_, mask):
-        for p in self.D.parameters():#关闭判别器
+        for p in self.D1.parameters():#关闭判别器
             p.requires_grad = False
-        
+        # for p in self.D2.parameters():  # 关闭判别器
+        #     p.requires_grad = False
+
         _, zs_a = self.G(img_a_m, mode='enc')#编码
         _, zs_b = self.G(img_b_m, mode='enc')#编码
-        h1_a, h2_a = torch.split(zs_a, 256, dim=1)
-        h1_b, h2_b = torch.split(zs_b, 256, dim=1)
-        z_b, gen2_b = self.classify(zs_b, att_b)#z新生成的码，gen2_为标签处理后的块
+        h1_a, h2_a = torch.split(zs_a, 128, dim=1)
+        h1_b, h2_b = torch.split(zs_b, 128, dim=1)
+        # z_b, gen2_b = self.classify(zs_b, att_b)#z新生成的码，gen2_为标签处理后的块
+        # z_a, gen2_a = self.classify(zs_a, att_a)
+
+        # s_a = self.G.extract(img_a_m)
+        # s_b = self.G.extract(img_b_m)
+
+        # s_a_att = self.classify(s_a, att_a)
+        # s_b_att = self.classify(s_b, att_b)
+
         z_a, gen2_a = self.classify(zs_a, att_a)
+        z_b, gen2_b = self.classify(zs_b, att_b)
 
-        s_a = self.G.extract(img_a)
-        s_b = self.G.extract(img_b)
-
-        gen2_b_style=self.G.translate(gen2_b,s_a)
-        gen2_a_style=self.G.translate(gen2_a,s_b)
+        # 重构
+        # gen2_a=self.G.translate(h2_a,s_a_att)
+        # gen2_b=self.G.translate(h2_b,s_b_att)
 
 
-        img_recon_b_m  = self.G(z_b, mode='dec')*mask
-        img_recon_a_m = self.G(z_a, mode='dec')*mask
 
-        
-        h_a1b2 = torch.cat([h1_a, gen2_b_style], dim=1)
-        h_b1a2 = torch.cat([h1_b, gen2_a_style], dim=1)
+        h_a1a2 = torch.cat([h1_a, gen2_a], dim=1)
+        h_b1b2 = torch.cat([h1_b, gen2_b], dim=1)
 
-        img_fake_a_m = self.G(h_a1b2, mode='dec')*mask
-        img_fake_b_m = self.G(h_b1a2, mode='dec')*mask
+        img_recon_b_m  = self.G(h_a1a2, mode='dec')
+        img_recon_a_m  = self.G(h_b1b2, mode='dec')
+
+        # 迁移
+        h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
+        h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
+
+        img_fake_a_m = self.G(h_a1b2, mode='dec')
+        img_fake_b_m = self.G(h_b1a2, mode='dec')
 
         img_fake_a = img_fake_a_m + img_a-  mask * img_a
         img_fake_b = img_fake_b_m + img_b - mask * img_b
 
-        d_a_fake, dc_a_fake = self.D(img_fake_a,img_fake_a_m)
-        d_b_fake, dc_b_fake = self.D(img_fake_b,img_fake_b_m) # 4,1
+        d_a_fake, dc_a_fake = self.D1(img_fake_a_m)
+        d_b_fake, dc_b_fake = self.D1(img_fake_b_m)
 
-        s_a_fake = self.G.extract(img_fake_a)
-        s_b_fake = self.G.extract(img_fake_b)
-        dc_a_fake=torch.squeeze(dc_a_fake,1)
+        # d_a_fake_total = self.D2(img_fake_a)
+        # d_b_fake_total = self.D2(img_fake_b)
+
+        s_a_fake = self.G.extract(img_fake_a_m)
+        s_b_fake = self.G.extract(img_fake_b_m)
+
+        dc_a_fake = torch.squeeze(dc_a_fake, 1)
         dc_b_fake = torch.squeeze(dc_b_fake, 1)
+
         if self.mode == 'wgan':
-            gf_loss = -d_a_fake.mean()-d_b_fake.mean()
+            gf_loss = -d_a_fake.mean() - d_b_fake.mean()
+            # gf_total_loss= -d_a_fake_total.mean()-d_b_fake_total.mean()
 
         gc_loss = F.binary_cross_entropy_with_logits(dc_a_fake, att_b) + F.binary_cross_entropy_with_logits(dc_b_fake, att_a)
-        gr_loss = F.l1_loss(img_recon_a_m+img_a-mask*img_a, img_a)+  F.l1_loss(img_recon_b_m+img_b-mask*img_b, img_b)#+ F.l1_loss(img_recon_b, img_b)
-        gs_loss = F.l1_loss(s_a_fake, s_a)+F.l1_loss(s_b_fake, s_b)
+        gr_loss = F.l1_loss(img_recon_a_m, img_a_m)+  F.l1_loss(img_recon_b_m, img_b_m)#+ F.l1_loss(img_recon_b, img_b)
+        # gs_loss = F.l1_loss(s_a_fake, s_a)+F.l1_loss(s_b_fake, s_b)
 
         '''
         if True:
@@ -423,12 +490,12 @@ class AttGAN():
         for i in range(3):
             loss_app_per += F.l1_loss(feat_output[i], feat_gt[i])
         '''
-        g_loss = gf_loss + 100 * gr_loss + self.lambda_2 * gc_loss+ 100 * gs_loss #+ vgg_loss
+        # g_loss = gf_loss+ gf_total_loss + 200 * gr_loss + self.lambda_2 * gc_loss
+        g_loss = gf_loss + 200 * gr_loss + self.lambda_2 * gc_loss
         
         self.optim_G.zero_grad()
         g_loss.backward()
         self.optim_G.step()
-        
         errG = {
             'g_loss': g_loss.item(), 'gf_loss': gf_loss.item(),
             'gc_loss': gc_loss.item(), 'gr_loss': gr_loss.item()
@@ -437,39 +504,41 @@ class AttGAN():
         return errG
 
 
-    def trainD(self, img_a_m, img_b_m, img_a, img_b,att_a, att_a_, att_b, att_b_, mask):
-        for p in self.D.parameters():
+    def trainD1(self, img_a_m, img_b_m, img_a, img_b,att_a, att_a_, att_b, att_b_, mask):
+        for p in self.D1.parameters():  # 打开判别器c
             p.requires_grad = True
+
         _, zs_a = self.G(img_a_m, mode='enc')  # 编码
         _, zs_b = self.G(img_b_m, mode='enc')  # 编码
 
-        h1_a, h2_a = torch.split(zs_a, 256, dim=1)#属性分割
-        h1_b, h2_b = torch.split(zs_b, 256, dim=1)#属性风格
+        h1_a, h2_a = torch.split(zs_a, 128, dim=1)#属性分割
+        h1_b, h2_b = torch.split(zs_b, 128, dim=1)#属性风格
 
-        z_b, gen2_b = self.classify(zs_b, att_b)
+        # s_a = self.G.extract(img_a_m)
+        # s_b = self.G.extract(img_b_m)
+
         z_a, gen2_a = self.classify(zs_a, att_a)
+        z_b, gen2_b = self.classify(zs_b, att_b)
 
-        s_a = self.G.extract(img_a)
-        s_b = self.G.extract(img_b)
+        # gen2_a = self.G.translate(h2_a, s_a_att)
+        # gen2_b = self.G.translate(h2_b, s_b_att)
 
-        gen2_b_style = self.G.translate(gen2_b, s_a)
-        gen2_a_style = self.G.translate(gen2_a, s_b)
+        h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
+        h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
 
-        h_a1b2 = torch.cat([h1_a, gen2_b_style], dim=1)
-        h_b1a2 = torch.cat([h1_b, gen2_a_style], dim=1)
+        img_fake_a_m = self.G(h_a1b2, mode='dec')
+        img_fake_b_m = self.G(h_b1a2, mode='dec')
 
-        img_fake_a_m = self.G(h_a1b2, mode='dec')*mask
-        img_fake_b_m= self.G(h_b1a2, mode='dec')*mask
         img_fake_a = img_fake_a_m + img_a - mask * img_a
         img_fake_b = img_fake_b_m + img_b - mask * img_b
 
-        d_real_a, dc_real_a = self.D(img_a,img_a_m*mask)
-        d_real_b, dc_real_b = self.D(img_b,img_b_m*mask)
+        d_a_fake, dc_a_fake = self.D1(img_fake_a_m)
+        d_b_fake, dc_b_fake = self.D1(img_fake_b_m)
 
-        d_fake_a, _ = self.D(img_fake_a.detach(),img_fake_a_m*mask)
-        d_fake_b, _ = self.D(img_fake_b.detach(),img_fake_b_m*mask)
-        
-        def gradient_penalty(f, real, fake, real_m, fake_m):
+        d_real_a, dc_real_a = self.D1(img_a_m)
+        d_real_b, dc_real_b = self.D1(img_b_m)
+
+        def gradient_penalty(f, real, fake=None):
             def interpolate(a, b=None):
                 if b is None:  # interpolation in DRAGAN
                     beta = torch.rand_like(a)
@@ -479,8 +548,7 @@ class AttGAN():
                 inter = a + alpha * (b - a)
                 return inter
             x = interpolate(real, fake).requires_grad_(True)
-            y = interpolate(real_m, fake_m).requires_grad_(True)
-            pred = f(x, y)
+            pred = f(x)
             if isinstance(pred, tuple):
                 pred = pred[0]
             grad = autograd.grad(
@@ -494,9 +562,9 @@ class AttGAN():
             return gp
         
         if self.mode == 'wgan':
-            wd = d_real_a.mean() + d_real_b.mean() - d_fake_a.mean() - d_fake_b.mean()#对抗
+            wd = d_real_a.mean() + d_real_b.mean() - d_a_fake.mean() - d_b_fake.mean()#对抗
             df_loss = -wd
-            df_gp = gradient_penalty(self.D, img_a, img_fake_a, img_a_m, img_fake_a_m) + gradient_penalty(self.D, img_b, img_fake_b, img_fake_b, img_fake_b_m)
+            df_gp = gradient_penalty(self.D1, img_a_m, img_fake_a_m) + gradient_penalty(self.D1,img_b_m, img_fake_b_m)
 
         dc_real_a = torch.squeeze(dc_real_a, 1)
         dc_real_b = torch.squeeze(dc_real_b, 1)
@@ -504,31 +572,88 @@ class AttGAN():
         # print(att_a.shape)
         dc_loss = F.binary_cross_entropy_with_logits(dc_real_a, att_a) + F.binary_cross_entropy_with_logits(dc_real_b, att_b)
         d_loss = df_loss + self.lambda_gp * df_gp + self.lambda_3 * dc_loss
-        
-        self.optim_D.zero_grad()
+
+
+
+        self.optim_D1.zero_grad()
         d_loss.backward()
-        self.optim_D.step()
+        self.optim_D1.step()
         
-        errD = {
+        errD1 = {
             'd_loss': d_loss.item(), 'df_loss': df_loss.item(), 
             'df_gp': df_gp.item(), 'dc_loss': dc_loss.item()
         }
-        return errD
+        return errD1
+
+
+    """
+    
+    def trainD2(self, img_a_m, img_b_m, img_a, img_b, att_a, att_a_, att_b, att_b_, mask):
+        for p in self.D2.parameters():  # 打开判别器
+            p.requires_grad = True
+
+        _, zs_a = self.G(img_a_m, mode='enc')  # 编码
+        _, zs_b = self.G(img_b_m, mode='enc')  # 编码
+
+        h1_a, h2_a = torch.split(zs_a, 128, dim=1)  # 属性分割
+        h1_b, h2_b = torch.split(zs_b, 128, dim=1)  # 属性风格
+
+        z_a, gen2_a = self.classify(zs_a, att_a)
+        z_b, gen2_b = self.classify(zs_b, att_b)
+        # gen2_a = self.G.translate(h2_a, s_a_att)
+        # gen2_b = self.G.translate(h2_b, s_b_att)
+
+        h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
+        h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
+
+        img_fake_a_m = self.G(h_a1b2, mode='dec')
+        img_fake_b_m = self.G(h_b1a2, mode='dec')
+
+        img_fake_a = img_fake_a_m + img_a - mask * img_a
+        img_fake_b = img_fake_b_m + img_b - mask * img_b
+
+        d_a_fake = self.D2(img_fake_a)
+        d_b_fake = self.D2(img_fake_b)
+
+        d_real_a= self.D2(img_a)
+        d_real_b= self.D2(img_b)
+
+        if self.mode == 'wgan':
+            wd = d_real_a.mean() + d_real_b.mean() - d_a_fake.mean() - d_b_fake.mean()  # 对抗
+            df_loss = -wd
+
+        # print(dc_real_a.shape)
+        # print(att_a.shape)
+        d_loss = 100*df_loss
+
+        self.optim_D2.zero_grad()
+        d_loss.backward()
+        self.optim_D2.step()
+
+        errD2 = {
+            'df_all_loss': df_loss.item()
+        }
+        return errD2
+    """
     
     def train(self):
         self.G.train()
-        self.D.train()
+        self.D1.train()
+        # self.D2.train()
     
     def eval(self):
         self.G.eval()
-        self.D.eval()
+        self.D1.eval()
+        # self.D2.eval()
     
     def save(self, path):
         states = {
             'G': self.G.state_dict(),
-            'D': self.D.state_dict(),
+            'D1': self.D1.state_dict(),
+            # 'D2': self.D2.state_dict(),
             'optim_G': self.optim_G.state_dict(),
-            'optim_D': self.optim_D.state_dict()
+            'optim_D1': self.optim_D1.state_dict(),
+            # 'optim_D2': self.optim_D2.state_dict()
         }
         torch.save(states, path)
     
@@ -536,18 +661,23 @@ class AttGAN():
         states = torch.load(path, map_location=lambda storage, loc: storage)
         if 'G' in states:
             self.G.load_state_dict(states['G'])
-        if 'D' in states:
-            self.D.load_state_dict(states['D'])
+        if 'D1' in states:
+            self.D1.load_state_dict(states['D1'])
+        # if 'D2' in states:
+        #    self.D2.load_state_dict(states['D2'])
         if 'optim_G' in states:
             self.optim_G.load_state_dict(states['optim_G'])
-        if 'optim_D' in states:
-            self.optim_D.load_state_dict(states['optim_D'])
+        if 'optim_D1' in states:
+            self.optim_D1.load_state_dict(states['optim_D1'])
+        # if 'optim_D1' in states:
+        #     self.optim_D2.load_state_dict(states['optim_D2'])
     
     def saveG(self, path):
         states = {
             'G': self.G.state_dict()
         }
         torch.save(states, path)
+
 
 if __name__ == '__main__':
     import argparse

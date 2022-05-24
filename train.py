@@ -32,19 +32,24 @@ def parse(args=None):
     
     parser.add_argument('--attrs', dest='attrs', default=attrs_default, nargs='+', help='attributes to learn')
     parser.add_argument('--data', dest='data', type=str, choices=['CelebA', 'CelebA-HQ'], default='CelebA')
-    parser.add_argument('--data_path', dest='data_path', type=str, default='/home/a/mulgan-cvpr/data/img_align_celeba/img_align_celeba')
-    parser.add_argument('--attr_path', dest='attr_path', type=str, default='/home/a/mulgan-cvpr/data/list_attr_celeba.txt')
+    # parser.add_argument('--data_path', dest='data_path', type=str, default='/home/a/mulgan-cvpr/data/img_align_celeba/img_align_celeba')
+    # parser.add_argument('--attr_path', dest='attr_path', type=str, default='/home/a//mulgan-cvpr/data/list_attr_celeba.txt')
+
+    parser.add_argument('--data_path', dest='data_path', type=str,
+                        default='D:/temperary_workspace/GAN/GAN/mulgan-cvpr/data/img_align_celeba/img_align_celeba')
+    parser.add_argument('--attr_path', dest='attr_path', type=str,
+                        default='D:/temperary_workspace/GAN/GAN/mulgan-cvpr/data/list_attr_celeba.txt')
     parser.add_argument('--image_list_path', dest='image_list_path', type=str, default='data/image_list.txt')#？未找到相关文件
     
-    parser.add_argument('--img_size', dest='img_size', type=int, default=64)
+    parser.add_argument('--img_size', dest='img_size', type=int, default=128)
     parser.add_argument('--shortcut_layers', dest='shortcut_layers', type=int, default=1)
     parser.add_argument('--inject_layers', dest='inject_layers', type=int, default=0)
     parser.add_argument('--enc_dim', dest='enc_dim', type=int, default=64) #编码维度
     parser.add_argument('--dec_dim', dest='dec_dim', type=int, default=64) #解码维度
     parser.add_argument('--dis_dim', dest='dis_dim', type=int, default=64) #判别器维度
     parser.add_argument('--dis_fc_dim', dest='dis_fc_dim', type=int, default=1024)#判别器全连接维度
-    parser.add_argument('--enc_layers', dest='enc_layers', type=int, default=4)#编码器层
-    parser.add_argument('--dec_layers', dest='dec_layers', type=int, default=4)#解码器层
+    parser.add_argument('--enc_layers', dest='enc_layers', type=int, default=3)#编码器层
+    parser.add_argument('--dec_layers', dest='dec_layers', type=int, default=3)#解码器层
     parser.add_argument('--dis_layers', dest='dis_layers', type=int, default=5)#判别器层
     parser.add_argument('--enc_norm', dest='enc_norm', type=str, default='batchnorm') #批量归一化
     parser.add_argument('--dec_norm', dest='dec_norm', type=str, default='batchnorm')#批量归一化
@@ -75,9 +80,11 @@ def parse(args=None):
     
     parser.add_argument('--save_interval', dest='save_interval', type=int, default=1000)
     parser.add_argument('--sample_interval', dest='sample_interval', type=int, default=1000)
-    parser.add_argument('--gpu', default=1,dest='gpu', action='store_true')
+    # parser.add_argument('--gpu',default=1, dest='gpu', action='store_true')
+    parser.add_argument('--gpu', dest='gpu', action='store_true')
     parser.add_argument('--multi_gpu', dest='multi_gpu', action='store_true')
-    parser.add_argument('--experiment_name', dest='experiment_name', default=datetime.datetime.now().strftime("%I:%M%p on %B %d, %Y"))
+    # parser.add_argument('--experiment_name', dest='experiment_name', default=datetime.datetime.now().strftime("%I:%M%p on %B %d, %Y"))
+    parser.add_argument('--experiment_name', dest='experiment_name', default='time')
     
     return parser.parse_args(args)
 
@@ -136,8 +143,8 @@ for epoch in range(args.epochs):
 
         # add mask
         mask = torch.zeros((img_a.shape[0], 1, img_a.shape[2], img_a.shape[3]))
-        mask[:, :, 50-6: 50+9, 32-10: 32+10] = 1.0  # mouth
-        #mask[:, :, 30 - 4: 30 + 7, 32 - 13: 32 + 13] = 1.0  # eye with eye brows
+        # mask[:, :, 50-6: 50+9, 32-10: 32+10] = 1.0  # mouth
+        mask[:, :, 88: 2*59, 2*22: 2*40] = 1.0  # eye with eye brows
         mask = mask.cuda() if args.gpu else mask
         img_a_m = img_a * mask#部分图片
         idx = torch.randperm(len(att_a))
@@ -159,12 +166,14 @@ for epoch in range(args.epochs):
         att_a_ = (att_a * 2 - 1) * args.thres_int
         att_b_ = (att_b * 2 - 1) * args.thres_int
         if (it+1) % (3+1) != 0:
-            errD = attgan.trainD(img_a_m, img_b_m,  img_a, img_b,att_a, att_a_, att_b, att_b_,mask)
-            add_scalar_dict(writer, errD, it+1, 'D')
+            errD1 = attgan.trainD1(img_a_m, img_b_m, img_a, img_b, att_a, att_a_, att_b, att_b_, mask)
+            # errD2 = attgan.trainD2(img_a_m, img_b_m, img_a, img_b, att_a, att_a_, att_b, att_b_, mask)
+            add_scalar_dict(writer, errD1, it + 1, 'D1')
+            # add_scalar_dict(writer, errD2, it + 1, 'D2')
         else:
-            errG = attgan.trainG(img_a_m, img_b_m,  img_a, img_b,att_a, att_a_, att_b, att_b_,mask)
+            errG = attgan.trainG(img_a_m, img_b_m,  img_a, img_b,att_a, att_a_, att_b, att_b_, mask)
             add_scalar_dict(writer, errG, it+1, 'G')
-            progressbar.say(epoch=epoch, iter=it+1, d_loss=errD['d_loss'], g_loss=errG['g_loss'], gr_loss=errG['gr_loss'])
+            progressbar.say(epoch=epoch, iter=it+1, d_loss=errD1['d_loss'], g_loss=errG['g_loss'], gr_loss=errG['gr_loss'])
         
         if (it+1) % args.save_interval == 0:
             # To save storage space, I only checkpoint the weights of G.
@@ -176,40 +185,41 @@ for epoch in range(args.epochs):
             # attgan.save(os.path.join(
             #     'output', args.experiment_name, 'checkpoint', 'weights.{:d}.pth'.format(epoch)
             # ))
-        if (it+1) % 20== 0:
+        if (it+1) % 20 == 0:
             attgan.eval()
             with torch.no_grad():
                 _, zs_a = attgan.G(img_a_m, mode='enc')
                 _, zs_b = attgan.G(img_b_m, mode='enc')
-                h1_a, h2_a = torch.split(zs_a, 256, dim=1)
-                h1_b, h2_b = torch.split(zs_b, 256, dim=1)
-                z_b, gen2_b = attgan.classify(zs_b, att_b)
+                h1_a, h2_a = torch.split(zs_a, 128, dim=1)
+                h1_b, h2_b = torch.split(zs_b, 128, dim=1)
+
+                # s_a = attgan.G.extract(img_a_m)
+                # s_b = attgan.G.extract(img_b_m)
+
                 z_a, gen2_a = attgan.classify(zs_a, att_a)
+                z_b, gen2_b = attgan.classify(zs_b, att_b)
 
-                s_a = attgan.G.extract(img_a)
-                s_b = attgan.G.extract(img_b)
+                # gen2_a = attgan.G.translate(h2_a, s_a_att)
+                # gen2_b = attgan.G.translate(h2_b, s_b_att)
 
-                gen2_b_style = attgan.G.translate(gen2_b, s_a)
-                gen2_a_style = attgan.G.translate(gen2_a, s_b)
+                h_a1b2 = torch.cat([h1_a, gen2_b], dim=1)
+                h_b1a2 = torch.cat([h1_b, gen2_a], dim=1)
 
-                h_a1b2 = torch.cat([h1_a, gen2_b_style], dim=1)
-                h_b1a2 = torch.cat([h1_b, gen2_a_style], dim=1)
-
-                img_fake_a_m = attgan.G(h_a1b2, mode='dec')*mask
-                img_fake_b_m = attgan.G(h_b1a2, mode='dec')*mask
+                img_fake_a_m = attgan.G(h_a1b2, mode='dec')
+                img_fake_b_m = attgan.G(h_b1a2, mode='dec')
                 img_fake_a = img_fake_a_m + img_a - mask * img_a
                 img_fake_b = img_fake_b_m + img_b - mask * img_b
 
-                viz_images = torch.stack([img_a,img_b,img_fake_a_m+img_a-mask*img_a], dim=1)
+                viz_images = torch.stack([img_a,img_b,img_fake_a], dim=1)
                 viz_images = viz_images.view(-1, *list(img_a.size())[1:])
                 vutils.save_image(viz_images,
                                   '%s/niter_%03d.png' % (output_file_path+'/'+args.experiment_name, it),
                                   nrow=3 * 4,
                                   normalize=True)
-                viz_imagesmask = torch.stack([img_a_m, img_b_m, img_fake_a_m ,img_fake_b_m], dim=1)
+                viz_imagesmask = torch.stack([img_a_m, img_b_m, img_fake_a_m,img_fake_b_m], dim=1)
                 viz_imagesmask = viz_imagesmask.view(-1, *list(img_a.size())[1:])
                 vutils.save_image(viz_imagesmask,
-                                  '%s/niter_%03dmask.png' % (output_file_path+'/'+args.experiment_name, it),
+                                  '%s/niter_%03dmask.png' % (output_file_path + '/' + args.experiment_name, it),
                                   nrow=3 * 4,
                                   normalize=True)
         it += 1
